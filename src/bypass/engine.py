@@ -1,5 +1,7 @@
 import logging
 from typing import Optional
+import aiohttp
+import re
 
 from src.domain_db.db import DomainDB
 from src.domain_db.checker import DomainChecker
@@ -124,6 +126,8 @@ class BypassResult:
 
 
 class BypassEngine:
+    MAX_RECURSION_DEPTH = 5
+
     def __init__(self, db: DomainDB, checker: DomainChecker):
         self.db = db
         self.checker = checker
@@ -139,6 +143,33 @@ class BypassEngine:
             base_url="https://api.bypass.tools/api/v1/bypass",
         )
 
+    @staticmethod
+    def _looks_like_gate_url(url: str) -> bool:
+        """Check if a URL looks like an ad-wall gate page, not a real bypass result."""
+        gate_domains = [
+            "whatsgrouphub.com",
+            "adshort",
+            "link4earn",
+            "loot-link",
+            "lootdest",
+            "cpmlink",
+            "shortconnect",
+            "cpmlinks",
+        ]
+        url_lower = url.lower()
+        for domain in gate_domains:
+            if domain in url_lower:
+                return True
+        gate_paths = [
+            "/educationinsurancess/",
+            "/scholarship",
+            "/insurance",
+        ]
+        for path in gate_paths:
+            if path in url_lower:
+                return True
+        return False
+
     async def close(self):
         await self.redirect_resolver.close()
         await self.tls.close()
@@ -148,6 +179,11 @@ class BypassEngine:
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
+
+    async def _finalize(self, result: BypassResult, _depth: int) -> BypassResult:
+        if _depth == 0 and result.success:
+            return await self._enrich(result)
+        return result
 
     async def _try_redirect(self, url: str) -> Optional[dict]:
         result = await self.redirect_resolver.resolve(url)
@@ -186,27 +222,36 @@ class BypassEngine:
                 pass
         return result
 
-    async def bypass(self, url: str) -> BypassResult:
+    async def bypass(self, url: str, _original_url: str = None, _depth: int = 0) -> BypassResult:
+        if _original_url is None:
+            _original_url = url
+
         domain_result = await self.checker.check_url(url)
         domain_status = domain_result.get("status", "unknown")
 
         if domain_status == "inactive":
             return BypassResult(
                 success=False,
-                original_url=url,
-                error="Domain inactive",
+                original_url=_original_url,
+                error=f"Domain {domain_result.get('domain', '')} inactive",
                 domain_status=domain_result,
             )
 
         cached = self.db.get_cached_bypass(url)
         if cached:
-            return await self._enrich(BypassResult(
+            if _depth < self.MAX_RECURSION_DEPTH:
+                next_check = await self.checker.check_url(cached)
+                if next_check.get("status") == "active" and not self._looks_like_gate_url(cached):
+                    deeper = await self.bypass(cached, _original_url, _depth + 1)
+                    if deeper.success:
+                        return await self._finalize(deeper, _depth)
+            return await self._finalize(BypassResult(
                 success=True,
-                original_url=url,
+                original_url=_original_url,
                 final_url=cached,
                 method="cache",
                 domain_status=domain_result,
-            ))
+            ), _depth)
 
         handlers = [
             ("http_redirect", self._try_redirect),
@@ -225,31 +270,44 @@ class BypassEngine:
                     continue
                 if isinstance(result, dict) and result.get("success"):
                     final = result["final_url"]
-                    self.db.set_bypass_cache(url, final)
-                    return await self._enrich(BypassResult(
-                        success=True,
-                        original_url=url,
-                        final_url=final,
-                        method=method_name,
-                        domain_status=domain_result,
-                        redirect_chain=result.get("chain", []),
-                    ))
-                if isinstance(result, str):
-                    self.db.set_bypass_cache(url, result)
-                    return await self._enrich(BypassResult(
-                        success=True,
-                        original_url=url,
-                        final_url=result,
-                        method=method_name,
-                        domain_status=domain_result,
-                    ))
+                    redirect_chain = result.get("chain", [])
+                elif isinstance(result, str):
+                    if method_name != "http_redirect" and self._looks_like_gate_url(result):
+                        logger.debug(f"Handler {method_name} returned gate URL {result}, skipping")
+                        continue
+                    final = result
+                    redirect_chain = []
+                else:
+                    continue
+
+                self.db.set_bypass_cache(url, final)
+
+                if _depth < self.MAX_RECURSION_DEPTH:
+                    next_check = await self.checker.check_url(final)
+                    if (
+                        next_check.get("status") == "active"
+                        and not self._looks_like_gate_url(final)
+                    ):
+                        deeper = await self.bypass(final, _original_url, _depth + 1)
+                        if deeper.success:
+                            return await self._finalize(deeper, _depth)
+
+                return await self._finalize(BypassResult(
+                    success=True,
+                    original_url=_original_url,
+                    final_url=final,
+                    method=method_name,
+                    domain_status=domain_result,
+                    redirect_chain=redirect_chain,
+                ), _depth)
+
             except Exception as e:
                 logger.debug(f"Handler {method_name} failed for {url}: {e}")
                 continue
 
         return BypassResult(
             success=False,
-            original_url=url,
+            original_url=_original_url,
             error="All bypass handlers failed",
             domain_status=domain_result,
         )

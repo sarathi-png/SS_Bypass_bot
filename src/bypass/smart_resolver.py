@@ -28,10 +28,25 @@ from .html_parser import HTMLRedirectParser
 TIMEOUT = 25
 MAX_ATTEMPTS = 3
 MAX_WAIT = 10
+MAX_JS_DEPTH = 8
 
 YSMM_RE = re.compile(r"ysmm\s+=\s+['\"](\S+)['\"]")
 GDTOT_DLD_RE = re.compile(r'gd=(.*?)&')
 GDTOT_DOMAIN_RE = re.compile(r'https?://([^/]+gdtot[^/]+)')
+
+VERIFICATION_GATE_PATTERNS = [
+    r"Verify\s+Institutional",
+    r"to\s+unlock\s+the\s+link",
+    r"id=['\"]continueBtn['\"]",
+    r"button[^>]*>Verify\s+",
+    r"Please\s+Verify",
+    r"Click\s+to\s+unlock",
+    r"Verify\s+You\s+Are\s+Human",
+    r"I'?m?\s+not\s+a\s+robot",
+    r"g-recaptcha",
+    r"h-captcha",
+    r"data-sitekey",
+]
 
 COMMON_AJAX_ENDPOINTS = [
     "/ajax.php?ajax=download",
@@ -71,6 +86,14 @@ GDRIVE_FILEID_RE = re.compile(
 )
 
 
+class VerificationGate(Exception):
+    """Raised when a verification gate (CAPTCHA, human verification) is detected."""
+    def __init__(self, url: str, gate_type: str = "unknown"):
+        self.url = url
+        self.gate_type = gate_type
+        super().__init__(f"Verification gate '{gate_type}' at {url}")
+
+
 class FormData:
     def __init__(self, url: str, fields: dict, submit_text: str = ""):
         self.url = url
@@ -97,7 +120,7 @@ class SmartResolver:
             await self._session.close()
             self._session = None
 
-    async def _fetch(self, url: str, follow_redirects: bool = False) -> Optional[dict]:
+    async def _fetch(self, url: str, allow_redirects: bool = True) -> Optional[dict]:
         if not HAS_CURL_CFFI:
             return None
         await self._ensure_session()
@@ -105,7 +128,7 @@ class SmartResolver:
             resp = await self._session.get(
                 url,
                 impersonate="chrome",
-                follow_redirects=follow_redirects,
+                allow_redirects=allow_redirects,
             )
             return {
                 "success": True,
@@ -128,7 +151,7 @@ class SmartResolver:
             else:
                 base = url.rsplit("/", 1)[0]
                 location = f"{base}/{location}"
-        result = await self._fetch(location, follow_redirects=True)
+        result = await self._fetch(location, allow_redirects=True)
         if result and result.get("success"):
             return result["url"]
         return location
@@ -181,7 +204,7 @@ class SmartResolver:
                 url,
                 data=fields,
                 impersonate="chrome",
-                follow_redirects=True,
+                allow_redirects=True,
             )
             final_url = str(resp.url)
             if final_url != url:
@@ -203,6 +226,15 @@ class SmartResolver:
         except Exception as e:
             logger.debug(f"Form POST failed for {url}: {e}")
             return None
+
+    @staticmethod
+    def _detect_verification_gate(html: str) -> Optional[str]:
+        for pat in VERIFICATION_GATE_PATTERNS:
+            if re.search(pat, html, re.IGNORECASE):
+                if "captcha" in pat or "sitekey" in pat:
+                    return "captcha"
+                return "verify_button"
+        return None
 
     def _detect_countdown(self, html: str) -> Optional[int]:
         match = COUNTER_RE.search(html)
@@ -230,7 +262,7 @@ class SmartResolver:
                     url,
                     headers=ajax_headers,
                     impersonate="chrome",
-                    follow_redirects=True,
+                    allow_redirects=True,
                 )
                 if resp.status_code != 200:
                     continue
@@ -328,7 +360,7 @@ class SmartResolver:
                 dld_url,
                 cookies={"crypt": crypt},
                 impersonate="chrome",
-                follow_redirects=True,
+                allow_redirects=True,
             )
             gd_match = GDTOT_DLD_RE.search(resp.text)
             if gd_match:
@@ -338,16 +370,17 @@ class SmartResolver:
             pass
         return None
 
-    async def resolve(self, url: str) -> Optional[str]:
-        if not HAS_CURL_CFFI:
-            return None
+    async def _follow_js_chain(self, url: str, visited: set) -> Optional[str]:
+        """Follow JS redirect chain recursively up to MAX_JS_DEPTH."""
+        current = url
+        for depth in range(MAX_JS_DEPTH):
+            if current in visited:
+                return current
+            visited.add(current)
 
-        url = url if url.startswith(("http://", "https://")) else f"https://{url}"
-
-        for attempt in range(MAX_ATTEMPTS):
-            result = await self._fetch(url, follow_redirects=False)
+            result = await self._fetch(current, allow_redirects=True)
             if not result:
-                return None
+                return current
 
             current_url = result["url"]
             html = result["text"]
@@ -357,22 +390,27 @@ class SmartResolver:
             if status in (301, 302, 303, 307, 308):
                 location = headers.get("location", "")
                 if location:
-                    return await self._resolve_redirect(current_url, location)
+                    current = await self._resolve_redirect(current_url, location)
+                    continue
 
-            if current_url != url:
-                return current_url
+            if current_url != current:
+                current = current_url
+                continue
 
             js_url = self.html_parser.extract_html_redirect(html, current_url)
             if js_url:
-                resolved = await self._fetch(js_url, follow_redirects=True)
-                if resolved and resolved.get("success"):
-                    return resolved["url"]
-                return js_url
+                current = js_url
+                continue
 
             adfly_url = self._try_adfly_decode(html)
             if adfly_url:
                 logger.debug(f"AdFly ysmm decode succeeded → {adfly_url}")
                 return adfly_url
+
+            gate_type = self._detect_verification_gate(html)
+            if gate_type:
+                logger.debug(f"Verification gate '{gate_type}' detected at {current_url}")
+                raise VerificationGate(current_url, gate_type)
 
             gdtot_url = await self._try_gdtot(current_url, html)
             if gdtot_url:
@@ -381,7 +419,8 @@ class SmartResolver:
 
             form_url = await self._try_form_post(html, current_url)
             if form_url:
-                return form_url
+                current = form_url
+                continue
 
             wait = self._detect_countdown(html)
             if wait:
@@ -397,6 +436,85 @@ class SmartResolver:
             if gdrive_url:
                 return gdrive_url
 
-            break
+            return current_url
+
+        return current
+
+    async def resolve(self, url: str) -> Optional[str]:
+        if not HAS_CURL_CFFI:
+            return None
+
+        url = url if url.startswith(("http://", "https://")) else f"https://{url}"
+
+        visited: set = set()
+        for attempt in range(MAX_ATTEMPTS):
+            if url in visited:
+                break
+            visited.add(url)
+
+            result = await self._fetch(url, allow_redirects=True)
+            if not result:
+                return None
+
+            current_url = result["url"]
+            html = result["text"]
+            status = result["status"]
+            headers = result["headers"]
+
+            if status in (301, 302, 303, 307, 308):
+                location = headers.get("location", "")
+                if location:
+                    url = await self._resolve_redirect(current_url, location)
+                    continue
+
+            if current_url != url:
+                url = current_url
+                continue
+
+            js_url = self.html_parser.extract_html_redirect(html, current_url)
+            if js_url:
+                try:
+                    final = await self._follow_js_chain(js_url, visited)
+                    if final and final != js_url:
+                        return final
+                    return js_url
+                except VerificationGate:
+                    return None
+
+            gate_type = self._detect_verification_gate(html)
+            if gate_type:
+                logger.debug(f"Verification gate '{gate_type}' detected at {current_url}")
+                return None
+
+            adfly_url = self._try_adfly_decode(html)
+            if adfly_url:
+                logger.debug(f"AdFly ysmm decode succeeded → {adfly_url}")
+                return adfly_url
+
+            gdtot_url = await self._try_gdtot(current_url, html)
+            if gdtot_url:
+                logger.debug(f"GDTot bypass succeeded → {gdtot_url}")
+                return gdtot_url
+
+            form_url = await self._try_form_post(html, current_url)
+            if form_url:
+                url = form_url
+                continue
+
+            wait = self._detect_countdown(html)
+            if wait:
+                logger.debug(f"Countdown {wait}s detected, waiting")
+                await asyncio.sleep(wait)
+                continue
+
+            api_url = await self._probe_endpoints(current_url)
+            if api_url:
+                return api_url
+
+            gdrive_url = self._extract_hidden_values(html, current_url)
+            if gdrive_url:
+                return gdrive_url
+
+            return current_url
 
         return None
