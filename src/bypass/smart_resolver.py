@@ -1,8 +1,9 @@
 import asyncio
+import base64
 import logging
 import re
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,16 @@ try:
 except ImportError:
     HAS_BS4 = False
 
+from config import config
 from .html_parser import HTMLRedirectParser
 
 TIMEOUT = 25
 MAX_ATTEMPTS = 3
 MAX_WAIT = 10
+
+YSMM_RE = re.compile(r"ysmm\s+=\s+['\"](\S+)['\"]")
+GDTOT_DLD_RE = re.compile(r'gd=(.*?)&')
+GDTOT_DOMAIN_RE = re.compile(r'https?://([^/]+gdtot[^/]+)')
 
 COMMON_AJAX_ENDPOINTS = [
     "/ajax.php?ajax=download",
@@ -256,6 +262,82 @@ class SmartResolver:
             return f"https://drive.google.com/uc?id={file_id}"
         return None
 
+    @staticmethod
+    def _decode_adfly_ysmm(ysmm: str) -> Optional[str]:
+        a, b = "", ""
+        for i, ch in enumerate(ysmm):
+            if i % 2 == 0:
+                a += ch
+            else:
+                b = ch + b
+        key = list(a + b)
+        i = 0
+        while i < len(key):
+            if key[i].isdigit():
+                for j in range(i + 1, len(key)):
+                    if key[j].isdigit():
+                        u = int(key[i]) ^ int(key[j])
+                        if u < 10:
+                            key[i] = str(u)
+                        i = j
+                        break
+            i += 1
+        combined = "".join(key)
+        try:
+            padded = combined + "=" * (4 - len(combined) % 4) if len(combined) % 4 else combined
+            decoded = base64.b64decode(padded)[16:-16]
+            return decoded.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    def _try_adfly_decode(self, html: str) -> Optional[str]:
+        match = YSMM_RE.search(html)
+        if not match:
+            return None
+        ysmm = match.group(1)
+        decoded = self._decode_adfly_ysmm(ysmm)
+        if not decoded:
+            return None
+        if re.search(r"go\.php\?u=", decoded):
+            try:
+                u_match = re.search(r"u=(.+)", decoded)
+                if u_match:
+                    decoded = base64.b64decode(u_match.group(1)).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        elif "&dest=" in decoded:
+            dest_match = re.search(r"dest=(.+)", decoded)
+            if dest_match:
+                decoded = unquote(dest_match.group(1))
+        return decoded
+
+    async def _try_gdtot(self, url: str, html: str) -> Optional[str]:
+        crypt = getattr(config, "gdtot_crypt", "") or ""
+        if not crypt:
+            return None
+        dld_match = GDTOT_DOMAIN_RE.search(url)
+        if not dld_match:
+            return None
+        try:
+            await self._ensure_session()
+            parsed = urlparse(url)
+            base_domain = f"{parsed.scheme}://{parsed.netloc}"
+            file_id = url.rstrip("/").rsplit("/", 1)[-1]
+            dld_url = f"{base_domain}/dld?id={file_id}"
+            resp = await self._session.get(
+                dld_url,
+                cookies={"crypt": crypt},
+                impersonate="chrome",
+                follow_redirects=True,
+            )
+            gd_match = GDTOT_DLD_RE.search(resp.text)
+            if gd_match:
+                gd_id = base64.b64decode(gd_match.group(1)).decode("utf-8", errors="replace")
+                return f"https://drive.google.com/open?id={gd_id}"
+        except Exception:
+            pass
+        return None
+
     async def resolve(self, url: str) -> Optional[str]:
         if not HAS_CURL_CFFI:
             return None
@@ -286,6 +368,16 @@ class SmartResolver:
                 if resolved and resolved.get("success"):
                     return resolved["url"]
                 return js_url
+
+            adfly_url = self._try_adfly_decode(html)
+            if adfly_url:
+                logger.debug(f"AdFly ysmm decode succeeded → {adfly_url}")
+                return adfly_url
+
+            gdtot_url = await self._try_gdtot(current_url, html)
+            if gdtot_url:
+                logger.debug(f"GDTot bypass succeeded → {gdtot_url}")
+                return gdtot_url
 
             form_url = await self._try_form_post(html, current_url)
             if form_url:

@@ -6,9 +6,10 @@ from src.domain_db.checker import DomainChecker
 from .redirect import RedirectResolver
 from .tls import TLSImpersonator
 from .html_parser import HTMLRedirectParser
-from .api_fallback import BypassVIPAPI, GenericPaidAPI
+from .api_fallback import BypassVIPAPI, GenericPaidAPI, RotatingBypassAPI
 from .browser import BrowserHandler
 from .smart_resolver import SmartResolver
+from .cloudflare import CloudflareResolver
 from ..features import strip_tracking, safety_flags, fetch_og_preview
 from config import config
 
@@ -129,6 +130,8 @@ class BypassEngine:
         self.redirect_resolver = RedirectResolver()
         self.tls = TLSImpersonator()
         self.smart_resolver = SmartResolver()
+        self.cloudflare = CloudflareResolver()
+        self.rotating_api = RotatingBypassAPI()
         self.bypass_vip = BypassVIPAPI(api_key=config.bypass_vip_api_key)
         self.browser = BrowserHandler()
         self.generic_api = GenericPaidAPI(
@@ -140,6 +143,8 @@ class BypassEngine:
         await self.redirect_resolver.close()
         await self.tls.close()
         await self.smart_resolver.close()
+        await self.cloudflare.close()
+        await self.rotating_api.close()
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
@@ -153,8 +158,14 @@ class BypassEngine:
     async def _try_smart_resolve(self, url: str) -> Optional[str]:
         return await self.smart_resolver.resolve(url)
 
+    async def _try_cloudflare(self, url: str) -> Optional[str]:
+        return await self.cloudflare.resolve(url)
+
     async def _try_bypass_vip(self, url: str) -> Optional[str]:
         return await self.bypass_vip.bypass(url)
+
+    async def _try_rotating_api(self, url: str) -> Optional[str]:
+        return await self.rotating_api.bypass(url)
 
     async def _try_browser(self, url: str) -> Optional[str]:
         return await self.browser.resolve(url)
@@ -200,8 +211,10 @@ class BypassEngine:
         handlers = [
             ("http_redirect", self._try_redirect),
             ("smart_resolver", self._try_smart_resolve),
+            ("cloudflare", self._try_cloudflare),
             ("bypass_vip", self._try_bypass_vip),
             ("browser", self._try_browser),
+            ("rotating_api", self._try_rotating_api),
             ("generic_api", self._try_generic_api),
         ]
 

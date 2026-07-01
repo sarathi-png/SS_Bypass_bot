@@ -16,6 +16,7 @@ class Config:
     bot_token: str = os.getenv("BOT_TOKEN", "")
     bypass_vip_api_key: str = os.getenv("BYPASS_VIP_API_KEY", "")
     bypass_tools_api_key: str = os.getenv("BYPASS_TOOLS_API_KEY", "")
+    gdtot_crypt: str = os.getenv("GDTOT_CRYPT", "")
     admin_ids: list[int] = field(default_factory=lambda: [
         int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()
     ])
