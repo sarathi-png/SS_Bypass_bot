@@ -8,6 +8,7 @@ from .tls import TLSImpersonator
 from .html_parser import HTMLRedirectParser
 from .api_fallback import BypassVIPAPI, GenericPaidAPI
 from .browser import BrowserHandler
+from .smart_resolver import SmartResolver
 from ..features import strip_tracking, safety_flags, fetch_og_preview
 from config import config
 
@@ -127,6 +128,7 @@ class BypassEngine:
         self.checker = checker
         self.redirect_resolver = RedirectResolver()
         self.tls = TLSImpersonator()
+        self.smart_resolver = SmartResolver()
         self.bypass_vip = BypassVIPAPI(api_key=config.bypass_vip_api_key)
         self.browser = BrowserHandler()
         self.generic_api = GenericPaidAPI(
@@ -137,6 +139,7 @@ class BypassEngine:
     async def close(self):
         await self.redirect_resolver.close()
         await self.tls.close()
+        await self.smart_resolver.close()
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
@@ -147,30 +150,8 @@ class BypassEngine:
             return None
         return result
 
-    async def _try_tls_fetch(self, url: str) -> Optional[str]:
-        result = await self.tls.fetch(url, follow_redirects=True)
-        if not result or not result.get("success"):
-            return None
-        final_url = result.get("url", "")
-        if final_url and final_url != url:
-            return final_url
-        return None
-
-    async def _try_html_parse(self, url: str) -> Optional[str]:
-        result = await self.tls.fetch(url, follow_redirects=False)
-        if not result or not result.get("success"):
-            return None
-        html = result.get("text", "")
-        final_url = result.get("url", url)
-        redirects = HTMLRedirectParser.extract_all(html, final_url)
-        for r in redirects:
-            target = r["url"]
-            if target and target != url:
-                resolved = await self.redirect_resolver.resolve(target)
-                if resolved["success"]:
-                    return resolved["final_url"]
-                return target
-        return None
+    async def _try_smart_resolve(self, url: str) -> Optional[str]:
+        return await self.smart_resolver.resolve(url)
 
     async def _try_bypass_vip(self, url: str) -> Optional[str]:
         return await self.bypass_vip.bypass(url)
@@ -218,8 +199,7 @@ class BypassEngine:
 
         handlers = [
             ("http_redirect", self._try_redirect),
-            ("tls_impersonation", self._try_tls_fetch),
-            ("html_parse", self._try_html_parse),
+            ("smart_resolver", self._try_smart_resolve),
             ("bypass_vip", self._try_bypass_vip),
             ("browser", self._try_browser),
             ("generic_api", self._try_generic_api),

@@ -76,6 +76,7 @@ DOMAIN_FAMILIES: dict[str, dict] = {
     "gdtot.com": {"type": "drive", "tier": 5},
     "sharer.pw": {"type": "drive", "tier": 5},
     "hubdrive.net": {"type": "drive", "tier": 5},
+    "hubdrive.tips": {"type": "drive", "tier": 5},
     "katdrive.net": {"type": "drive", "tier": 5},
     "drivefire.net": {"type": "drive", "tier": 5},
     "kolop.net": {"type": "drive", "tier": 5},

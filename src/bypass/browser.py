@@ -14,6 +14,29 @@ except ImportError:
 
 NAV_TIMEOUT = 30000
 STALL_TIMEOUT = 10000
+CLICK_TIMEOUT = 20000
+COUNTDOWN_WAIT_MAX = 15000
+
+DOWNLOAD_SELECTORS = [
+    "a:has-text('Download')",
+    "a:has-text('Skip Ad')",
+    "a:has-text('Get Link')",
+    "a:has-text('Continue')",
+    "a:has-text('Proceed')",
+    "a:has-text('Generate Link')",
+    "button:has-text('Download')",
+    "button:has-text('Skip Ad')",
+    "button:has-text('Get Link')",
+    "button:has-text('Continue')",
+    "button:has-text('Proceed')",
+    "button:has-text('Generate Link')",
+    "#download",
+    "#down",
+    ".download-btn",
+    ".btn-download",
+    "[id*='download']",
+    "[class*='download']",
+]
 
 
 class BrowserHandler:
@@ -102,6 +125,16 @@ class BrowserHandler:
             if current_url and current_url != url:
                 return current_url
 
+            clicked = await self._click_download(page)
+            if clicked:
+                try:
+                    await page.wait_for_timeout(STALL_TIMEOUT)
+                except Exception:
+                    pass
+                current_url = page.url
+                if current_url and current_url != url:
+                    return current_url
+
             return None
 
         except Exception as e:
@@ -112,3 +145,85 @@ class BrowserHandler:
                 await page.close()
             if context:
                 await context.close()
+
+    async def resolve_with_click(self, url: str) -> Optional[str]:
+        if not HAS_PLAYWRIGHT:
+            return None
+
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        try:
+            await self._ensure_browser()
+        except Exception as e:
+            logger.debug(f"Failed to launch browser: {e}")
+            return None
+
+        context = None
+        page = None
+        try:
+            context = await self._browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/135.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+            )
+            page = await context.new_page()
+
+            try:
+                await page.goto(url, wait_until="load", timeout=NAV_TIMEOUT)
+            except PlaywrightTimeout:
+                pass
+            except Exception as e:
+                logger.debug(f"Browser navigation error: {e}")
+                return None
+
+            await asyncio.sleep(3)
+
+            current_url = page.url
+            if current_url and current_url != url:
+                return current_url
+
+            clicked = await self._click_download(page)
+            if clicked:
+                try:
+                    await page.wait_for_timeout(STALL_TIMEOUT)
+                except Exception:
+                    pass
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=CLICK_TIMEOUT)
+                except Exception:
+                    pass
+                current_url = page.url
+                if current_url and current_url != url:
+                    return current_url
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Browser click handler failed for {url}: {e}")
+            return None
+        finally:
+            if page:
+                await page.close()
+            if context:
+                await context.close()
+
+    async def _click_download(self, page) -> bool:
+        for selector in DOWNLOAD_SELECTORS:
+            try:
+                btn = await page.wait_for_selector(
+                    selector,
+                    timeout=CLICK_TIMEOUT,
+                    state="visible",
+                )
+                if btn:
+                    await btn.click()
+                    logger.debug(f"Clicked button: {selector}")
+                    return True
+            except Exception:
+                continue
+        return False
