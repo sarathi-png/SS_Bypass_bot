@@ -1,0 +1,7 @@
+python-telegram-bot>=22.0
+aiohttp>=3.9
+aiofiles>=24.0
+curl-cffi>=0.15
+bs4>=4.12
+lxml>=5.0
+certifi>=2024.0

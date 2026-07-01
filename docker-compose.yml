@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    container_name: telegram-bypass-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - BYPASS_VIP_API_KEY=${BYPASS_VIP_API_KEY:-}
+      - BYPASS_TOOLS_API_KEY=${BYPASS_TOOLS_API_KEY:-}
+      - ADMIN_IDS=${ADMIN_IDS:-}
+      - ALLOWED_CHATS=${ALLOWED_CHATS:-}
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-10}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      - MAX_CONCURRENT_BYPASS=${MAX_CONCURRENT_BYPASS:-5}
+      - DB_PATH=data/bot_cache.db
+    volumes:
+      - ./data:/app/data
