@@ -41,6 +41,26 @@ WINDOW_OPEN_RE = re.compile(
     r'window\.open\s*\(\s*["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
+LOCATION_REPLACE_RE = re.compile(
+    r'(?:window|document|self|top)?\.location\.replace\s*\(\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+LOCATION_ASSIGN_RE = re.compile(
+    r'(?:window|document|self|top)?\.location\.assign\s*\(\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+WINDOW_OPEN_SELF_RE = re.compile(
+    r'window\.open\s*\(\s*["\']([^"\']+)["\'][^)]*?["\']_self["\']',
+    re.IGNORECASE,
+)
+WINDOW_NAVIGATE_RE = re.compile(
+    r'window\.navigate\s*\(\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+SETTIMEOUT_REDIRECT_RE = re.compile(
+    r'(?:setTimeout|setInterval)\s*\((?:function\s*\(\)\s*)?\{[^}]*?(?:window|document|self|top)?\.(?:location(?:\.href)?|location\.(?:replace|assign))\s*[=:]\s*["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
 
 
 class HTMLRedirectParser:
@@ -74,6 +94,11 @@ class HTMLRedirectParser:
             WINDOW_LOCATION_HREF_RE,
             WINDOW_LOCATION_RE,
             TOP_LOCATION_RE,
+            LOCATION_REPLACE_RE,
+            LOCATION_ASSIGN_RE,
+            WINDOW_OPEN_SELF_RE,
+            WINDOW_NAVIGATE_RE,
+            SETTIMEOUT_REDIRECT_RE,
             REDIRECT_URL_RE,
             WINDOW_OPEN_RE,
         ]

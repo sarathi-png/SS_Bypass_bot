@@ -142,7 +142,10 @@ class BypassEngine:
         await self.generic_api.close()
 
     async def _try_redirect(self, url: str) -> Optional[dict]:
-        return await self.redirect_resolver.resolve(url)
+        result = await self.redirect_resolver.resolve(url)
+        if result and result.get("success") and result.get("final_url") == url:
+            return None
+        return result
 
     async def _try_tls_fetch(self, url: str) -> Optional[str]:
         result = await self.tls.fetch(url, follow_redirects=True)
