@@ -52,11 +52,18 @@ class BrowserHandler:
         self._playwright = None
         self._browser = None
 
-    async def _ensure_browser(self):
+    async def _ensure_browser(self, force_reset=False):
         if not HAS_PLAYWRIGHT:
             return
-        if self._browser is None:
-            self._playwright = await async_playwright().start()
+        if force_reset or self._browser is None:
+            if self._browser is not None:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=[
@@ -69,26 +76,44 @@ class BrowserHandler:
 
     async def close(self):
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
             self._browser = None
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
             self._playwright = None
 
-    async def resolve(self, url: str) -> Optional[str]:
+    async def _with_crash_recovery(self, url: str, method: str) -> Optional[str]:
         if not HAS_PLAYWRIGHT:
             logger.debug("Playwright not installed, skipping browser handler")
             return None
-
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
+        for attempt in range(2):
+            try:
+                await self._ensure_browser(force_reset=(attempt > 0))
+                if method == "resolve":
+                    return await self._do_resolve(url)
+                else:
+                    return await self._do_resolve_with_click(url)
+            except Exception as e:
+                logger.debug(f"Browser {method} attempt {attempt+1} failed: {e}")
+                self._browser = None
+        return None
 
-        try:
-            await self._ensure_browser()
-        except Exception as e:
-            logger.debug(f"Failed to launch browser: {e}")
-            return None
+    async def resolve(self, url: str) -> Optional[str]:
+        return await self._with_crash_recovery(url, "resolve")
 
+    async def resolve_with_click(self, url: str) -> Optional[str]:
+        return await self._with_crash_recovery(url, "resolve_with_click")
+
+    async def _do_resolve(self, url: str) -> Optional[str]:
+        await self._ensure_browser()
         context = None
         page = None
         try:
@@ -146,27 +171,15 @@ class BrowserHandler:
             return None
 
         except Exception as e:
-            logger.debug(f"Browser handler failed for {url}: {e}")
-            return None
+            raise
         finally:
             if page:
                 await page.close()
             if context:
                 await context.close()
 
-    async def resolve_with_click(self, url: str) -> Optional[str]:
-        if not HAS_PLAYWRIGHT:
-            return None
-
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
-
-        try:
-            await self._ensure_browser()
-        except Exception as e:
-            logger.debug(f"Failed to launch browser: {e}")
-            return None
-
+    async def _do_resolve_with_click(self, url: str) -> Optional[str]:
+        await self._ensure_browser()
         context = None
         page = None
         try:
@@ -212,8 +225,7 @@ class BrowserHandler:
             return None
 
         except Exception as e:
-            logger.debug(f"Browser click handler failed for {url}: {e}")
-            return None
+            raise
         finally:
             if page:
                 await page.close()

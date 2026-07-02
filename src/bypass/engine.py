@@ -12,6 +12,7 @@ from .api_fallback import BypassVIPAPI, GenericPaidAPI, RotatingBypassAPI
 from .browser import BrowserHandler
 from .smart_resolver import SmartResolver
 from .cloudflare import CloudflareResolver
+from .domain_specific import DomainSpecificHandler
 from ..features import strip_tracking, safety_flags, fetch_og_preview
 from config import config
 
@@ -135,6 +136,7 @@ class BypassEngine:
         self.tls = TLSImpersonator()
         self.smart_resolver = SmartResolver()
         self.cloudflare = CloudflareResolver()
+        self.domain_specific = DomainSpecificHandler()
         self.rotating_api = RotatingBypassAPI()
         self.bypass_vip = BypassVIPAPI(api_key=config.bypass_vip_api_key)
         self.browser = BrowserHandler()
@@ -144,10 +146,33 @@ class BypassEngine:
         )
 
     @staticmethod
+    def _is_valid_result(original_url: str, final_url: str) -> bool:
+        if final_url == original_url:
+            return False
+        final_lower = final_url.lower()
+        bad_patterns = [
+            "enable javascript",
+            "enable js",
+            "your browser does not support javascript",
+            "sorry, you have been blocked",
+            "access denied",
+            "500 internal server error",
+            "502 bad gateway",
+            "503 service unavailable",
+            "404 not found",
+        ]
+        for pat in bad_patterns:
+            if pat in final_lower:
+                return False
+        return True
+
+    @staticmethod
     def _looks_like_gate_url(url: str) -> bool:
         """Check if a URL looks like an ad-wall gate page, not a real bypass result."""
         gate_domains = [
             "whatsgrouphub.com",
+            "lovezindagihai.com",
+            "news.zindagihai.com",
             "adshort",
             "link4earn",
             "loot-link",
@@ -176,6 +201,7 @@ class BypassEngine:
         await self.smart_resolver.close()
         await self.cloudflare.close()
         await self.rotating_api.close()
+        self.domain_specific = None
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
@@ -196,6 +222,9 @@ class BypassEngine:
 
     async def _try_cloudflare(self, url: str) -> Optional[str]:
         return await self.cloudflare.resolve(url)
+
+    async def _try_domain_specific(self, url: str) -> Optional[str]:
+        return await self.domain_specific.resolve(url)
 
     async def _try_bypass_vip(self, url: str) -> Optional[str]:
         return await self.bypass_vip.bypass(url)
@@ -239,24 +268,27 @@ class BypassEngine:
 
         cached = self.db.get_cached_bypass(url)
         if cached:
-            if _depth < self.MAX_RECURSION_DEPTH:
-                next_check = await self.checker.check_url(cached)
-                if next_check.get("status") == "active" and not self._looks_like_gate_url(cached):
-                    deeper = await self.bypass(cached, _original_url, _depth + 1)
-                    if deeper.success:
-                        return await self._finalize(deeper, _depth)
-            return await self._finalize(BypassResult(
-                success=True,
-                original_url=_original_url,
-                final_url=cached,
-                method="cache",
-                domain_status=domain_result,
-            ), _depth)
+            if self._is_valid_result(url, cached):
+                if _depth < self.MAX_RECURSION_DEPTH:
+                    next_check = await self.checker.check_url(cached)
+                    if next_check.get("status") == "active" and not self._looks_like_gate_url(cached):
+                        deeper = await self.bypass(cached, _original_url, _depth + 1)
+                        if deeper.success:
+                            return await self._finalize(deeper, _depth)
+                return await self._finalize(BypassResult(
+                    success=True,
+                    original_url=_original_url,
+                    final_url=cached,
+                    method="cache",
+                    domain_status=domain_result,
+                ), _depth)
+            logger.debug(f"Invalid cached result for {url}: {cached}")
 
         handlers = [
             ("http_redirect", self._try_redirect),
             ("smart_resolver", self._try_smart_resolve),
             ("cloudflare", self._try_cloudflare),
+            ("domain_specific", self._try_domain_specific),
             ("bypass_vip", self._try_bypass_vip),
             ("browser", self._try_browser),
             ("rotating_api", self._try_rotating_api),
@@ -280,7 +312,10 @@ class BypassEngine:
                 else:
                     continue
 
-                self.db.set_bypass_cache(url, final)
+                if self._is_valid_result(url, final):
+                    self.db.set_bypass_cache(url, final)
+                else:
+                    logger.debug(f"Not caching invalid result for {url}: {final}")
 
                 if _depth < self.MAX_RECURSION_DEPTH:
                     next_check = await self.checker.check_url(final)
