@@ -150,6 +150,8 @@ class BypassEngine:
     def _is_valid_result(original_url: str, final_url: str) -> bool:
         if not final_url or final_url == original_url:
             return False
+        if BypassEngine._is_tracking_url(final_url):
+            return False
         final_lower = final_url.lower()
         bad_patterns = [
             "enable javascript",
@@ -166,6 +168,24 @@ class BypassEngine:
             if pat in final_lower:
                 return False
         return True
+
+    @staticmethod
+    def _is_tracking_url(url: str) -> bool:
+        url_lower = url.lower()
+        tracking_patterns = [
+            "adlinkfly=",
+            "mtc1.",
+            "nclsil.in",
+            "flexthecar.com",
+            "adclick",
+            "adserv.",
+            "trk.",
+            "advertising/",
+        ]
+        for pat in tracking_patterns:
+            if pat in url_lower:
+                return True
+        return False
 
     @staticmethod
     def _looks_like_gate_url(url: str) -> bool:
@@ -191,6 +211,8 @@ class BypassEngine:
             "shrinkme",
             "za.gl",
             "bc.vc",
+            "nclsil.in",
+            "flexthecar.com",
         ]
         url_lower = url.lower()
         for domain in gate_domains:
@@ -323,9 +345,15 @@ class BypassEngine:
                     if isinstance(result, dict) and result.get("success"):
                         final = result["final_url"]
                         redirect_chain = result.get("chain", [])
+                        if self._is_tracking_url(final):
+                            logger.debug(f"Handler {method_name} returned tracking URL {final}, skipping")
+                            continue
                     elif isinstance(result, str):
                         if method_name != "http_redirect" and self._looks_like_gate_url(result):
                             logger.debug(f"Handler {method_name} returned gate URL {result}, skipping")
+                            continue
+                        if self._is_tracking_url(result):
+                            logger.debug(f"Handler {method_name} returned tracking URL {result}, skipping")
                             continue
                         final = result
                         redirect_chain = []
