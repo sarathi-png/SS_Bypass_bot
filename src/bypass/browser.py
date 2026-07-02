@@ -13,7 +13,7 @@ except ImportError:
 
 
 NAV_TIMEOUT = 30000
-STALL_TIMEOUT = 10000
+STALL_TIMEOUT = 5000
 CLICK_TIMEOUT = 20000
 COUNTDOWN_WAIT_MAX = 15000
 
@@ -165,34 +165,37 @@ class BrowserHandler:
         return None
 
     async def _try_interact(self, page, original_url: str) -> Optional[str]:
-        current_url = page.url
-        try:
-            await page.wait_for_timeout(STALL_TIMEOUT)
-        except Exception:
-            pass
-        if page.url != current_url:
-            return page.url
-
-        tg = await self._extract_telegram(page)
-        if tg:
-            return tg
-
-        clicked = await self._click_download(page)
-        if clicked:
+        seen_urls = {page.url, original_url}
+        for _round in range(4):
             try:
                 await page.wait_for_timeout(STALL_TIMEOUT)
             except Exception:
                 pass
-            try:
-                await page.wait_for_load_state("networkidle", timeout=CLICK_TIMEOUT)
-            except Exception:
-                pass
-            new_url = page.url
-            if new_url != original_url and new_url != current_url:
-                return new_url
+
+            current_url = page.url
+            if current_url not in seen_urls:
+                return current_url
+
             tg = await self._extract_telegram(page)
             if tg:
                 return tg
+
+            clicked = await self._click_download(page)
+            if clicked:
+                try:
+                    await page.wait_for_timeout(STALL_TIMEOUT)
+                except Exception:
+                    pass
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=CLICK_TIMEOUT)
+                except Exception:
+                    pass
+                new_url = page.url
+                if new_url not in seen_urls:
+                    return new_url
+                tg = await self._extract_telegram(page)
+                if tg:
+                    return tg
         return None
 
     async def _do_resolve(self, url: str) -> Optional[str]:
