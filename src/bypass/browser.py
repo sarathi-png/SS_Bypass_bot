@@ -16,6 +16,16 @@ NAV_TIMEOUT = 30000
 STALL_TIMEOUT = 5000
 CLICK_TIMEOUT = 20000
 COUNTDOWN_WAIT_MAX = 15000
+TRACKING_DOMAINS = [
+    "nclsil.in",
+    "flexthecar.com",
+    "adlinkfly",
+    "mtc1.",
+    "adclick",
+    "adserv.",
+    "trk.",
+    "advertising/",
+]
 
 DOWNLOAD_SELECTORS = [
     "a:has-text('Download')",
@@ -199,6 +209,14 @@ class BrowserHandler:
                     return tg
         return None
 
+    @staticmethod
+    def _is_tracking_url(url: str) -> bool:
+        url_lower = url.lower()
+        for domain in TRACKING_DOMAINS:
+            if domain in url_lower:
+                return True
+        return False
+
     async def _do_resolve(self, url: str) -> Optional[str]:
         await self._ensure_browser()
         context = None
@@ -216,38 +234,41 @@ class BrowserHandler:
             page = await context.new_page()
 
             try:
-                await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT)
+                await page.goto(url, wait_until="load", timeout=NAV_TIMEOUT)
             except PlaywrightTimeout:
                 pass
             except Exception as e:
                 logger.debug(f"Browser navigation error: {e}")
+                return None
 
-            await asyncio.sleep(2)
+            last_url = page.url
+            for _ in range(6):
+                try:
+                    await page.wait_for_timeout(2000)
+                except Exception:
+                    pass
 
-            current_url = page.url
-            if current_url and current_url != url:
-                if self._requires_interaction(current_url):
+                current = page.url
+                if self._is_tracking_url(current):
+                    last_url = current
+                    continue
+
+                if current == last_url and current != url:
+                    if self._requires_interaction(current):
+                        result = await self._try_interact(page, url)
+                        if result:
+                            return result
+                    return current
+
+                if current != last_url:
+                    last_url = current
+
+            if last_url and last_url != url and not self._is_tracking_url(last_url):
+                if self._requires_interaction(last_url):
                     result = await self._try_interact(page, url)
                     if result:
                         return result
-                return current_url
-
-            try:
-                await page.wait_for_timeout(STALL_TIMEOUT)
-            except Exception:
-                pass
-
-            current_url = page.url
-            if current_url and current_url != url:
-                if self._requires_interaction(current_url):
-                    result = await self._try_interact(page, url)
-                    if result:
-                        return result
-                return current_url
-
-            result = await self._try_interact(page, url)
-            if result:
-                return result
+                return last_url
 
             return None
 
@@ -283,19 +304,34 @@ class BrowserHandler:
                 logger.debug(f"Browser navigation error: {e}")
                 return None
 
-            await asyncio.sleep(3)
+            last_url = page.url
+            for _ in range(6):
+                try:
+                    await page.wait_for_timeout(2000)
+                except Exception:
+                    pass
 
-            current_url = page.url
-            if current_url and current_url != url:
-                if self._requires_interaction(current_url):
+                current = page.url
+                if self._is_tracking_url(current):
+                    last_url = current
+                    continue
+
+                if current == last_url and current != url:
+                    if self._requires_interaction(current):
+                        result = await self._try_interact(page, url)
+                        if result:
+                            return result
+                    return current
+
+                if current != last_url:
+                    last_url = current
+
+            if last_url and last_url != url and not self._is_tracking_url(last_url):
+                if self._requires_interaction(last_url):
                     result = await self._try_interact(page, url)
                     if result:
                         return result
-                return current_url
-
-            result = await self._try_interact(page, url)
-            if result:
-                return result
+                return last_url
 
             return None
 
