@@ -159,39 +159,49 @@ class SmartResolver:
     async def _try_form_post(self, html: str, base_url: str) -> Optional[str]:
         if not HAS_BS4:
             return None
-        try:
-            soup = BeautifulSoup(html, "lxml")
-        except Exception:
-            return None
+        MAX_FORM_CHAIN = 5
+        current_html = html
+        current_base = base_url
 
-        for form_tag in soup.find_all("form"):
-            action = form_tag.get("action", "")
-            method = form_tag.get("method", "get").lower()
-            if method != "post":
-                continue
+        for _ in range(MAX_FORM_CHAIN):
+            try:
+                soup = BeautifulSoup(current_html, "lxml")
+            except Exception:
+                return None
 
-            inputs = form_tag.find_all("input", type="hidden")
-            fields = {}
-            for inp in inputs:
-                name = inp.get("name")
-                value = inp.get("value", "")
-                if name:
-                    fields[name] = value
-
-            has_csrf = any(
-                "csrf" in k.lower() or k.startswith("_") for k in fields
-            )
-            has_ad_type = any("ad" in k.lower() for k in fields)
-            has_accept = any("accept" in k.lower() for k in fields)
-
-            if not (has_csrf or has_ad_type or has_accept):
-                continue
-
-            action_url = urljoin(base_url, action) if action else base_url
-            logger.debug(f"Form POST to {action_url} with {len(fields)} fields")
-            result = await self._post_form(action_url, fields)
-            if result:
-                return result
+            submitted = False
+            for form_tag in soup.find_all("form"):
+                action = form_tag.get("action", "")
+                method = form_tag.get("method", "get").lower()
+                if method != "post":
+                    continue
+                inputs = form_tag.find_all("input", type="hidden")
+                fields = {}
+                for inp in inputs:
+                    name = inp.get("name")
+                    value = inp.get("value", "")
+                    if name:
+                        fields[name] = value
+                if not fields:
+                    continue
+                action_url = urljoin(current_base, action) if action else current_base
+                logger.debug(f"Form POST to {action_url} with {len(fields)} fields")
+                result = await self._post_form(action_url, fields)
+                if result is None:
+                    continue
+                if isinstance(result, str):
+                    return result
+                if isinstance(result, tuple):
+                    url_or_none, body = result
+                    if url_or_none:
+                        return url_or_none
+                    if body:
+                        current_html = body
+                        current_base = action_url
+                        submitted = True
+                        break
+            if not submitted:
+                break
 
         return None
 
@@ -222,6 +232,7 @@ class SmartResolver:
                                 return val
                 except Exception:
                     pass
+            return (None, text)
             return None
         except Exception as e:
             logger.debug(f"Form POST failed for {url}: {e}")

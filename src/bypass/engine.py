@@ -13,6 +13,7 @@ from .smart_resolver import SmartResolver
 from .cloudflare import CloudflareResolver
 from .domain_specific import DomainSpecificHandler
 from .nicktrick import NicktrickResolver
+from .online_fallback import OnlineBypassFallback
 from ..features import strip_tracking, safety_flags, fetch_og_preview
 from config import config
 
@@ -145,6 +146,7 @@ class BypassEngine:
             api_key=config.bypass_tools_api_key,
             base_url="https://api.bypass.tools/api/v1/bypass",
         )
+        self.online_fallback = OnlineBypassFallback()
 
     @staticmethod
     def _is_valid_result(original_url: str, final_url: str) -> bool:
@@ -238,6 +240,7 @@ class BypassEngine:
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
+        await self.online_fallback.close()
 
     async def _finalize(self, result: BypassResult, _depth: int) -> BypassResult:
         if _depth == 0 and result.success:
@@ -273,6 +276,9 @@ class BypassEngine:
 
     async def _try_generic_api(self, url: str) -> Optional[str]:
         return await self.generic_api.bypass(url)
+
+    async def _try_online_fallback(self, url: str) -> Optional[str]:
+        return await self.online_fallback.bypass(url)
 
     async def _enrich(self, result: BypassResult) -> BypassResult:
         if result.success and result.final_url:
@@ -335,6 +341,7 @@ class BypassEngine:
                 ("browser", self._try_browser),
                 ("rotating_api", self._try_rotating_api),
                 ("generic_api", self._try_generic_api),
+                ("online_fallback", self._try_online_fallback),
             ])
 
             for method_name, handler in handlers:
