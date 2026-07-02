@@ -364,6 +364,8 @@ class BypassEngine:
                 success=False,
                 original_url=_original_url,
                 error="All bypass handlers failed",
+                domain_status=domain_result,
+            )
 
         if _depth == 0:
             try:
@@ -377,5 +379,3 @@ class BypassEngine:
                     domain_status=domain_result,
                 )
         return await _run_handlers()
-            domain_status=domain_result,
-        )
