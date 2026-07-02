@@ -12,7 +12,7 @@ from src.domain_db.updater import DomainUpdater
 from src.bypass.engine import BypassEngine
 from src.rate_limiter import RateLimiter
 from src.request_queue import RequestQueue
-from src.utils import extract_urls
+from src.utils import extract_urls, extract_domain
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -113,7 +113,6 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
     urls = extract_urls(text)
     short_urls = []
     for url in urls:
-        from src.utils import extract_domain
         domain = extract_domain(url)
         if domain and domain in known_domains:
             short_urls.append(url)

@@ -12,7 +12,6 @@ class DomainSpecificHandler:
         self._build_routes()
 
     def _build_routes(self):
-        from . import captcha_solver
         from . import drives
         from . import hosters
         from . import shorteners_ext
@@ -62,6 +61,7 @@ class DomainSpecificHandler:
             (re.compile(r"https?://(streamtape\.(com|to|xyz)/)\S+"), hosters.streamtape_bypass),
 
             # --- Shorteners ---
+            (re.compile(r"https?://(ouo\.(io|press)/)\S+"), shorteners_ext.ouo_bypass),
             (re.compile(r"https?://(short\.url2go\.in/)\S+"), shorteners_ext.shourturl),
             (re.compile(r"https?://(adf\.ly/)\S+"), shorteners_ext.adfly_bypass),
             (re.compile(r"https?://(bit\.ly\/)\S+"), shorteners_ext.bitly_bypass),

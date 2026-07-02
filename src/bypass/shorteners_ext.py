@@ -49,20 +49,20 @@ async def decrypt_url(code: str) -> str:
 async def shourturl(url: str) -> Optional[str]:
     """Bypass for short.url2go.in and similar shorteners."""
     import cloudscraper
+    from urllib.parse import urlparse
     client = cloudscraper.create_scraper(allow_brotli=False)
-    DOMAIN = "https://short.url2go.in/RJOVAq30CU7lINo9AwG4oT3eISn7"
     url = url[:-1] if url[-1] == "/" else url
+    parsed = urlparse(url)
+    domain = f"{parsed.scheme}://{parsed.netloc}"
     code = url.split("/")[-1]
-    final_url = f"{DOMAIN}/{code}"
-    ref = "https://blog.textpage.xyz/"
-    h = {"referer": ref}
-    resp = client.get(final_url, headers=h)
+    final_url = f"{domain}/{code}"
+    resp = client.get(final_url, headers={"referer": final_url})
     soup = BeautifulSoup(resp.content, "html.parser")
     inputs = soup.find_all("input")
     data = {inp.get("name"): inp.get("value") for inp in inputs}
     h = {"x-requested-with": "XMLHttpRequest"}
     await asyncio.sleep(8)
-    r = client.post(f"{DOMAIN}/links/go", data=data, headers=h)
+    r = client.post(f"{domain}/links/go", data=data, headers=h)
     try:
         return r.json()["url"]
     except Exception:
@@ -107,10 +107,6 @@ async def gtlinks_bypass(url: str) -> Optional[str]:
     try:
         url = url[:-1] if url[-1] == "/" else url
         if "theforyou.in" not in url:
-            html = await _http_get(url)
-            if not html:
-                return None
-            url = str(html)  # not great; we need the final URL
             from httpx import AsyncClient, Timeout
             async with AsyncClient() as ses:
                 resp = await ses.get(url, follow_redirects=True, timeout=Timeout(10.0))
@@ -397,3 +393,29 @@ async def shortner_type_two_bypass(url: str) -> Optional[str]:
         if re.match(value[0], url):
             return await _shortner_bypass(url, value[1], value[3], value[2])
     return None
+
+
+async def ouo_bypass(url: str) -> Optional[str]:
+    from .captcha_solver import OUO_RECAPTCHA_URL, recaptchav3
+    from httpx import AsyncClient, Timeout
+    try:
+        async with AsyncClient() as sess:
+            resp = await sess.get(url, timeout=Timeout(15.0))
+            html = resp.text
+            match = re.search(r'<input type="hidden" name="xurl" value="(.*?)">', html)
+            if not match:
+                logger.debug("ouo_bypass: no xurl found")
+                return None
+            xurl = match.group(1)
+            token = await recaptchav3(OUO_RECAPTCHA_URL)
+            if not token:
+                logger.debug("ouo_bypass: recaptcha token failed")
+                return None
+            post_url = str(resp.url)
+            data = {"xurl": xurl, "recaptcha-token": token}
+            headers = {"content-type": "application/x-www-form-urlencoded"}
+            result = await sess.post(post_url, data=data, headers=headers, timeout=Timeout(15.0), follow_redirects=True)
+            return str(result.url)
+    except Exception as e:
+        logger.debug(f"ouo_bypass failed: {e}")
+        return None

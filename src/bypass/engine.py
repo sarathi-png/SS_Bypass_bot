@@ -6,8 +6,6 @@ import re
 from src.domain_db.db import DomainDB
 from src.domain_db.checker import DomainChecker
 from .redirect import RedirectResolver
-from .tls import TLSImpersonator
-from .html_parser import HTMLRedirectParser
 from .api_fallback import BypassVIPAPI, GenericPaidAPI, RotatingBypassAPI
 from .browser import BrowserHandler
 from .smart_resolver import SmartResolver
@@ -129,12 +127,12 @@ class BypassResult:
 
 class BypassEngine:
     MAX_RECURSION_DEPTH = 5
+    BYPASS_TIMEOUT = 60
 
     def __init__(self, db: DomainDB, checker: DomainChecker):
         self.db = db
         self.checker = checker
         self.redirect_resolver = RedirectResolver()
-        self.tls = TLSImpersonator()
         self.smart_resolver = SmartResolver()
         self.cloudflare = CloudflareResolver()
         self.domain_specific = DomainSpecificHandler()
@@ -199,7 +197,6 @@ class BypassEngine:
 
     async def close(self):
         await self.redirect_resolver.close()
-        await self.tls.close()
         await self.smart_resolver.close()
         await self.cloudflare.close()
         await self.rotating_api.close()
@@ -290,66 +287,81 @@ class BypassEngine:
                 ), _depth)
             logger.debug(f"Invalid cached result for {url}: {cached}")
 
-        handlers = [
-            ("http_redirect", self._try_redirect),
-            ("smart_resolver", self._try_smart_resolve),
-            ("cloudflare", self._try_cloudflare),
-            ("nicktrick", self._try_nicktrick),
-            ("domain_specific", self._try_domain_specific),
-            ("bypass_vip", self._try_bypass_vip),
-            ("browser", self._try_browser),
-            ("rotating_api", self._try_rotating_api),
-            ("generic_api", self._try_generic_api),
-        ]
+        async def _run_handlers():
+            handlers = [
+                ("http_redirect", self._try_redirect),
+                ("smart_resolver", self._try_smart_resolve),
+                ("cloudflare", self._try_cloudflare),
+                ("nicktrick", self._try_nicktrick),
+                ("domain_specific", self._try_domain_specific),
+                ("bypass_vip", self._try_bypass_vip),
+                ("browser", self._try_browser),
+                ("rotating_api", self._try_rotating_api),
+                ("generic_api", self._try_generic_api),
+            ]
 
-        for method_name, handler in handlers:
-            try:
-                result = await handler(url)
-                if not result:
-                    continue
-                if isinstance(result, dict) and result.get("success"):
-                    final = result["final_url"]
-                    redirect_chain = result.get("chain", [])
-                elif isinstance(result, str):
-                    if method_name != "http_redirect" and self._looks_like_gate_url(result):
-                        logger.debug(f"Handler {method_name} returned gate URL {result}, skipping")
+            for method_name, handler in handlers:
+                try:
+                    result = await handler(url)
+                    if not result:
                         continue
-                    final = result
-                    redirect_chain = []
-                else:
+                    if isinstance(result, dict) and result.get("success"):
+                        final = result["final_url"]
+                        redirect_chain = result.get("chain", [])
+                    elif isinstance(result, str):
+                        if method_name != "http_redirect" and self._looks_like_gate_url(result):
+                            logger.debug(f"Handler {method_name} returned gate URL {result}, skipping")
+                            continue
+                        final = result
+                        redirect_chain = []
+                    else:
+                        continue
+
+                    if self._is_valid_result(url, final):
+                        self.db.set_bypass_cache(url, final)
+                    else:
+                        logger.debug(f"Not caching invalid result for {url}: {final}")
+                        continue
+
+                    if _depth < self.MAX_RECURSION_DEPTH:
+                        next_check = await self.checker.check_url(final)
+                        if (
+                            next_check.get("status") == "active"
+                            and not self._looks_like_gate_url(final)
+                        ):
+                            deeper = await self.bypass(final, _original_url, _depth + 1)
+                            if deeper.success:
+                                return await self._finalize(deeper, _depth)
+
+                    return await self._finalize(BypassResult(
+                        success=True,
+                        original_url=_original_url,
+                        final_url=final,
+                        method=method_name,
+                        domain_status=domain_result,
+                        redirect_chain=redirect_chain,
+                    ), _depth)
+
+                except Exception as e:
+                    logger.debug(f"Handler {method_name} failed for {url}: {e}")
                     continue
 
-                if self._is_valid_result(url, final):
-                    self.db.set_bypass_cache(url, final)
-                else:
-                    logger.debug(f"Not caching invalid result for {url}: {final}")
+            return BypassResult(
+                success=False,
+                original_url=_original_url,
+                error="All bypass handlers failed",
 
-                if _depth < self.MAX_RECURSION_DEPTH:
-                    next_check = await self.checker.check_url(final)
-                    if (
-                        next_check.get("status") == "active"
-                        and not self._looks_like_gate_url(final)
-                    ):
-                        deeper = await self.bypass(final, _original_url, _depth + 1)
-                        if deeper.success:
-                            return await self._finalize(deeper, _depth)
-
-                return await self._finalize(BypassResult(
-                    success=True,
+        if _depth == 0:
+            try:
+                return await asyncio.wait_for(_run_handlers(), timeout=self.BYPASS_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning(f"Bypass timed out after {self.BYPASS_TIMEOUT}s for {url}")
+                return BypassResult(
+                    success=False,
                     original_url=_original_url,
-                    final_url=final,
-                    method=method_name,
+                    error=f"Bypass timed out after {self.BYPASS_TIMEOUT}s",
                     domain_status=domain_result,
-                    redirect_chain=redirect_chain,
-                ), _depth)
-
-            except Exception as e:
-                logger.debug(f"Handler {method_name} failed for {url}: {e}")
-                continue
-
-        return BypassResult(
-            success=False,
-            original_url=_original_url,
-            error="All bypass handlers failed",
+                )
+        return await _run_handlers()
             domain_status=domain_result,
         )

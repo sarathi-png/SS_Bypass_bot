@@ -90,6 +90,7 @@ class BrowserHandler:
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-gpu",
+                    "--single-process",
                 ],
             )
 
@@ -311,7 +312,7 @@ class BrowserHandler:
             try:
                 btn = await page.wait_for_selector(
                     selector,
-                    timeout=CLICK_TIMEOUT,
+                    timeout=3000,
                     state="visible",
                 )
                 if btn:
