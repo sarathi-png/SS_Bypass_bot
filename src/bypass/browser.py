@@ -44,6 +44,25 @@ DOWNLOAD_SELECTORS = [
     "[class*='download']",
     "[id*='continue']",
     "[id*='verify']",
+    "input[value*='Verify']",
+    "input[value*='verify']",
+    "[class*='verify']",
+    "[id*='unlock']",
+    "button:has-text('Institutional')",
+    "button:has-text('Coverage')",
+]
+
+NEEDS_INTERACTION_DOMAINS = [
+    "whatsgrouphub.com",
+    "lovezindagihai.com",
+    "news.zindagihai.com",
+    "adshort",
+    "link4earn",
+    "loot-link",
+    "lootdest",
+    "cpmlink",
+    "shortconnect",
+    "cpmlinks",
 ]
 
 
@@ -112,6 +131,70 @@ class BrowserHandler:
     async def resolve_with_click(self, url: str) -> Optional[str]:
         return await self._with_crash_recovery(url, "resolve_with_click")
 
+    @staticmethod
+    def _requires_interaction(url: str) -> bool:
+        url_lower = url.lower()
+        for domain in NEEDS_INTERACTION_DOMAINS:
+            if domain in url_lower:
+                return True
+        return False
+
+    @staticmethod
+    async def _extract_telegram(page) -> Optional[str]:
+        try:
+            links = await page.eval_on_selector_all(
+                "a[href*='t.me'], a[href*='telegram.me'], a[href*='telegram.org']",
+                "els => els.map(el => el.href).filter(h => h.match(/t\\.me|telegram\\.me/))",
+            )
+            if links and len(links) > 0:
+                return links[0]
+            links2 = await page.evaluate("""
+                () => {
+                    const results = [];
+                    document.querySelectorAll('a').forEach(a => {
+                        const h = a.href || '';
+                        if (h.includes('t.me/') || h.includes('telegram.me/')) results.push(h);
+                    });
+                    return results;
+                }
+            """)
+            if links2 and len(links2) > 0:
+                return links2[0]
+        except Exception:
+            pass
+        return None
+
+    async def _try_interact(self, page, original_url: str) -> Optional[str]:
+        current_url = page.url
+        try:
+            await page.wait_for_timeout(STALL_TIMEOUT)
+        except Exception:
+            pass
+        if page.url != current_url:
+            return page.url
+
+        tg = await self._extract_telegram(page)
+        if tg:
+            return tg
+
+        clicked = await self._click_download(page)
+        if clicked:
+            try:
+                await page.wait_for_timeout(STALL_TIMEOUT)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_load_state("networkidle", timeout=CLICK_TIMEOUT)
+            except Exception:
+                pass
+            new_url = page.url
+            if new_url != original_url and new_url != current_url:
+                return new_url
+            tg = await self._extract_telegram(page)
+            if tg:
+                return tg
+        return None
+
     async def _do_resolve(self, url: str) -> Optional[str]:
         await self._ensure_browser()
         context = None
@@ -128,14 +211,6 @@ class BrowserHandler:
             )
             page = await context.new_page()
 
-            final_url = None
-
-            async def on_navigation(response):
-                nonlocal final_url
-                final_url = response.url
-
-            page.on("response", on_navigation)
-
             try:
                 await page.goto(url, wait_until="networkidle", timeout=NAV_TIMEOUT)
             except PlaywrightTimeout:
@@ -147,6 +222,10 @@ class BrowserHandler:
 
             current_url = page.url
             if current_url and current_url != url:
+                if self._requires_interaction(current_url):
+                    result = await self._try_interact(page, url)
+                    if result:
+                        return result
                 return current_url
 
             try:
@@ -156,21 +235,19 @@ class BrowserHandler:
 
             current_url = page.url
             if current_url and current_url != url:
+                if self._requires_interaction(current_url):
+                    result = await self._try_interact(page, url)
+                    if result:
+                        return result
                 return current_url
 
-            clicked = await self._click_download(page)
-            if clicked:
-                try:
-                    await page.wait_for_timeout(STALL_TIMEOUT)
-                except Exception:
-                    pass
-                current_url = page.url
-                if current_url and current_url != url:
-                    return current_url
+            result = await self._try_interact(page, url)
+            if result:
+                return result
 
             return None
 
-        except Exception as e:
+        except Exception:
             raise
         finally:
             if page:
@@ -206,25 +283,19 @@ class BrowserHandler:
 
             current_url = page.url
             if current_url and current_url != url:
+                if self._requires_interaction(current_url):
+                    result = await self._try_interact(page, url)
+                    if result:
+                        return result
                 return current_url
 
-            clicked = await self._click_download(page)
-            if clicked:
-                try:
-                    await page.wait_for_timeout(STALL_TIMEOUT)
-                except Exception:
-                    pass
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=CLICK_TIMEOUT)
-                except Exception:
-                    pass
-                current_url = page.url
-                if current_url and current_url != url:
-                    return current_url
+            result = await self._try_interact(page, url)
+            if result:
+                return result
 
             return None
 
-        except Exception as e:
+        except Exception:
             raise
         finally:
             if page:
