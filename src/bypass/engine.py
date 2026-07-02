@@ -13,6 +13,7 @@ from .browser import BrowserHandler
 from .smart_resolver import SmartResolver
 from .cloudflare import CloudflareResolver
 from .domain_specific import DomainSpecificHandler
+from .nicktrick import NicktrickResolver
 from ..features import strip_tracking, safety_flags, fetch_og_preview
 from config import config
 
@@ -137,6 +138,7 @@ class BypassEngine:
         self.smart_resolver = SmartResolver()
         self.cloudflare = CloudflareResolver()
         self.domain_specific = DomainSpecificHandler()
+        self.nicktrick = NicktrickResolver()
         self.rotating_api = RotatingBypassAPI()
         self.bypass_vip = BypassVIPAPI(api_key=config.bypass_vip_api_key)
         self.browser = BrowserHandler()
@@ -202,6 +204,7 @@ class BypassEngine:
         await self.cloudflare.close()
         await self.rotating_api.close()
         self.domain_specific = None
+        await self.nicktrick.close()
         await self.bypass_vip.close()
         await self.browser.close()
         await self.generic_api.close()
@@ -222,6 +225,9 @@ class BypassEngine:
 
     async def _try_cloudflare(self, url: str) -> Optional[str]:
         return await self.cloudflare.resolve(url)
+
+    async def _try_nicktrick(self, url: str) -> Optional[str]:
+        return await self.nicktrick.resolve(url)
 
     async def _try_domain_specific(self, url: str) -> Optional[str]:
         return await self.domain_specific.resolve(url)
@@ -288,6 +294,7 @@ class BypassEngine:
             ("http_redirect", self._try_redirect),
             ("smart_resolver", self._try_smart_resolve),
             ("cloudflare", self._try_cloudflare),
+            ("nicktrick", self._try_nicktrick),
             ("domain_specific", self._try_domain_specific),
             ("bypass_vip", self._try_bypass_vip),
             ("browser", self._try_browser),
