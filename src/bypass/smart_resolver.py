@@ -28,7 +28,7 @@ from .html_parser import HTMLRedirectParser
 TIMEOUT = 25
 MAX_ATTEMPTS = 3
 MAX_WAIT = 10
-MAX_JS_DEPTH = 8
+MAX_JS_DEPTH = 5
 
 YSMM_RE = re.compile(r"ysmm\s+=\s+['\"](\S+)['\"]")
 GDTOT_DLD_RE = re.compile(r'gd=(.*?)&')

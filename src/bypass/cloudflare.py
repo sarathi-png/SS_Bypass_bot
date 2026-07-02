@@ -6,6 +6,8 @@ import re
 
 logger = logging.getLogger(__name__)
 
+FOLLOW_CHAIN_TIMEOUT = 30
+
 # Patterns matching ad-wall verification gate pages
 VERIFICATION_GATE_PATTERNS = [
     r"Verify\s+Institutional",
@@ -130,7 +132,9 @@ class CloudflareResolver:
                 return text
             if self.is_cloudflare_challenge(text):
                 return None
-            chain_result = await self._follow_chain(url)
+            chain_result = await asyncio.wait_for(
+                self._follow_chain(url), timeout=FOLLOW_CHAIN_TIMEOUT
+            )
             if chain_result is None:
                 return None
             if chain_result != url:
@@ -139,6 +143,9 @@ class CloudflareResolver:
             if redirect_url:
                 return redirect_url
             return final_url
+        except asyncio.TimeoutError:
+            logger.debug(f"Chain follow timed out for {url}")
+            return None
         except Exception as e:
             logger.debug(f"Cloudscraper failed for {url}: {e}")
             return None
@@ -167,7 +174,9 @@ class CloudflareResolver:
                 if re.search(pat, text, re.IGNORECASE):
                     return None
 
-            chain_result = await self._follow_chain(url)
+            chain_result = await asyncio.wait_for(
+                self._follow_chain(url), timeout=FOLLOW_CHAIN_TIMEOUT
+            )
             if chain_result is None:
                 return None
             if chain_result != url:

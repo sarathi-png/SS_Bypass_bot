@@ -119,6 +119,14 @@ class DomainSpecificHandler:
             (re.compile(r"https?://(open2get\.in/)\S+"), shorteners_ext.shortner_type_two_bypass),
         ]
 
+    def has_route(self, url: str) -> bool:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        for pattern, _ in self._routes:
+            if pattern.search(url):
+                return True
+        return False
+
     async def resolve(self, url: str) -> Optional[str]:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url

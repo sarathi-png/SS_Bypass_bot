@@ -147,7 +147,7 @@ class BypassEngine:
 
     @staticmethod
     def _is_valid_result(original_url: str, final_url: str) -> bool:
-        if final_url == original_url:
+        if not final_url or final_url == original_url:
             return False
         final_lower = final_url.lower()
         bad_patterns = [
@@ -180,6 +180,16 @@ class BypassEngine:
             "cpmlink",
             "shortconnect",
             "cpmlinks",
+            "ad2boost",
+            "adshrink",
+            "admonkey",
+            "adbimat",
+            "adclick",
+            "exe.io",
+            "fc.lc",
+            "shrinkme",
+            "za.gl",
+            "bc.vc",
         ]
         url_lower = url.lower()
         for domain in gate_domains:
@@ -243,7 +253,6 @@ class BypassEngine:
 
     async def _enrich(self, result: BypassResult) -> BypassResult:
         if result.success and result.final_url:
-            import aiohttp
             try:
                 connector = aiohttp.TCPConnector(limit=1)
                 async with aiohttp.ClientSession(connector=connector) as session:
@@ -288,17 +297,22 @@ class BypassEngine:
             logger.debug(f"Invalid cached result for {url}: {cached}")
 
         async def _run_handlers():
-            handlers = [
-                ("http_redirect", self._try_redirect),
-                ("smart_resolver", self._try_smart_resolve),
-                ("cloudflare", self._try_cloudflare),
-                ("nicktrick", self._try_nicktrick),
+            has_domain_route = self.domain_specific.has_route(url)
+            handlers = []
+            if not has_domain_route:
+                handlers.extend([
+                    ("http_redirect", self._try_redirect),
+                    ("smart_resolver", self._try_smart_resolve),
+                    ("cloudflare", self._try_cloudflare),
+                    ("nicktrick", self._try_nicktrick),
+                ])
+            handlers.extend([
                 ("domain_specific", self._try_domain_specific),
                 ("bypass_vip", self._try_bypass_vip),
                 ("browser", self._try_browser),
                 ("rotating_api", self._try_rotating_api),
                 ("generic_api", self._try_generic_api),
-            ]
+            ])
 
             for method_name, handler in handlers:
                 try:

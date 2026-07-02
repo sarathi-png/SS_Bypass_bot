@@ -10,6 +10,7 @@ import aiohttp
 from .db import DomainDB
 
 PROBE_TIMEOUT = 15
+STALE_CHECK_HOURS = 24
 
 
 class DomainChecker:
@@ -107,6 +108,14 @@ class DomainChecker:
             result["error"] = "connection_failed"
         return result
 
+    def _is_stale(self, last_checked: str) -> bool:
+        from datetime import timedelta
+        try:
+            checked = datetime.fromisoformat(last_checked)
+            return (datetime.now(timezone.utc) - checked) > timedelta(hours=STALE_CHECK_HOURS)
+        except Exception:
+            return True
+
     async def check_url(self, url: str) -> dict:
         domain = self._extract_domain(url)
         if not domain:
@@ -114,7 +123,9 @@ class DomainChecker:
 
         db_result = self.check_domain_in_db(domain)
         if db_result:
-            return {"domain": domain, **db_result}
+            last_checked = db_result.get("last_checked", "")
+            if not self._is_stale(last_checked):
+                return {"domain": domain, **db_result}
 
         probe_result = await self.probe_domain(domain)
         self.db.set_domain_status(

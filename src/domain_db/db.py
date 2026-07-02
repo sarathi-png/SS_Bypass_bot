@@ -145,6 +145,7 @@ class DomainDB:
                VALUES (?, ?, 1, ?, ?)""",
             (original_url, result_url, now, expires),
         )
+        conn.execute("DELETE FROM bypass_cache WHERE expires_at < ?", (now,))
         conn.commit()
         conn.close()
 
